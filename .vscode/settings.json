@@ -1,0 +1,7 @@
+{
+    "python.terminal.activateEnvironment": true,
+    "debug.allowBreakpointsEverywhere": false,
+    "python.linting.pylintEnabled": true,
+    "python.linting.enabled": false,
+    "python.analysis.typeCheckingMode": "off",
+}
