@@ -9,3 +9,5 @@ pip install --upgrade pip
 
 # install project dependencies
 cat requirements.txt | sed -e '/^\s*#.*$/d' -e '/^\s*$/d' | xargs -n 1 python -m pip install
+
+echo OPENAI_KEY="<YOUR_API_KEY_HERE>" > .env

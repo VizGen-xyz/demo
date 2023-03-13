@@ -25,6 +25,9 @@ GRAPH_PROMPT = [
             "---------------------\n"
             "{table_schema}"
             "---------------------\n"
+            "The column names you can choose for x_string or y_string are\n"
+            "{column_names}\n"
+            "Respond in JSON only"
         )
     }
 ]
@@ -39,6 +42,7 @@ MESSAGE_PROMPT = [
             "---------------------\n"
             "{table_schema}"
             "---------------------\n"
+            "Do not use functions like FLOOR"
         )
     }
 ]
@@ -93,12 +97,15 @@ def execute_sql(sql_query: str):
 
     df = pd.read_parquet(os.path.join(
         UPLOAD_FILE_DEST, 'uploaded_file.parquet'))
-    result_df = sqldf(sql_query, locals())
+
+    # We reset index to grab whatever a potential group by clause might've performed as a column
+    result_df = sqldf(sql_query, locals()).reset_index()
+
     # convert the dataframe to a CSV string
     result_df_csv_string = StringIO()
 
     # This saves the result_df to the string buffer passed in on the first argument
-    result_df.to_csv(result_df_csv_string)
+    result_df.to_csv(result_df_csv_string, index=False)
 
     filter_tokens = []
     parsed = sqlparse.parse(sql_query)[0]
@@ -156,12 +163,11 @@ def generate_table_schema_string(summary_df=None):
     return output_string
 
 
-def format_system_prompt_with_table_schema(message_to_format, table_schema):
+def format_system_prompt_with_table_schema(message_to_format, **kwargs):
     output_messages = []
     for message in message_to_format:
         if "content" in message:
-            formatted_str = message["content"].format(
-                table_schema=table_schema)
+            formatted_str = message["content"].format(**kwargs)
             message['content'] = formatted_str
             output_messages.append(message)
         else:
@@ -177,7 +183,7 @@ def text_to_sql_with_retry(natural_language_query, k=3):
 
     content = MSG_WITH_SCHEMA_AND_WARNINGS.format(
         natural_language_query=natural_language_query, table_schema=table_schema)
-    messages = format_system_prompt_with_table_schema(MESSAGE_PROMPT, table_schema)
+    messages = format_system_prompt_with_table_schema(MESSAGE_PROMPT, table_schema=table_schema)
     messages.append({
         "role": "user",
         "content": content
@@ -185,22 +191,27 @@ def text_to_sql_with_retry(natural_language_query, k=3):
 
     assistant_message = None
     for _ in range(k):
-        assistant_message = get_assistant_message(messages=messages)
-        sql_query = _clean_message_content(
-            assistant_message['message']['content'])
-
-        response = execute_sql(sql_query)
-        if response:
-            result_df = response['result_df'].reset_index()
-            del response["result_df"]
-            summary_df = generate_summary_dataframe(result_df)
-            table_schema_string = generate_table_schema_string(summary_df=summary_df)
-            messages = format_system_prompt_with_table_schema(GRAPH_PROMPT, table_schema_string)
+        try:
             assistant_message = get_assistant_message(messages=messages)
-            response['graph'] = assistant_message['message']['content']
+            sql_query = _clean_message_content(
+                assistant_message['message']['content'])
 
-            # Generated SQL query did not produce exception. Return result
-            return response, sql_query
+            response = execute_sql(sql_query)
+            if response:
+                result_df = response['result_df'].reset_index()
+                del response["result_df"]
+                summary_df = generate_summary_dataframe(result_df)
+                table_schema_string = generate_table_schema_string(summary_df=summary_df)
+                messages = format_system_prompt_with_table_schema(GRAPH_PROMPT, table_schema=table_schema_string, column_names=response['column_names'])
+                assistant_message = get_assistant_message(messages=messages)
+                response['graph'] = assistant_message['message']['content']
+
+                # Generated SQL query did not produce exception. Return result
+                return response, sql_query
+        except Exception as e:
+            # Catch error and retry
+            error_msg = f'Error encountered when executing text_to_sql: {str(e)}'
+            print(error_msg)
 
     print("Could not generate SQL query after {k} tries.".format(k=k))
     return None, None
